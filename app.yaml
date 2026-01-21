@@ -1,0 +1,80 @@
+name: itsur-eats-v6
+region: nyc1
+services:
+  - name: api
+    source_dir: backend-api
+    dockerfile_path: Dockerfile.api
+    http_port: 3000
+    instance_count: 2
+    instance_size_slug: basic-xxs
+    routes:
+      - path: /api
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+      - key: REDIS_HOST
+        scope: RUN_TIME
+        value: ${redis.HOSTNAME}
+      - key: REDIS_PORT
+        scope: RUN_TIME
+        value: ${redis.PORT}
+      - key: REDIS_PASSWORD
+        scope: RUN_TIME
+        value: ${redis.PASSWORD}
+      - key: CORS_ORIGIN
+        value: https://admin.itsureats.edu.mx
+      - key: JWT_SECRET
+        type: SECRET
+        
+  - name: worker
+    source_dir: backend-api
+    dockerfile_path: Dockerfile.worker
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+      - key: REDIS_HOST
+        scope: RUN_TIME
+        value: ${redis.HOSTNAME}
+      - key: REDIS_PORT
+        scope: RUN_TIME
+        value: ${redis.PORT}
+      - key: REDIS_PASSWORD
+        scope: RUN_TIME
+        value: ${redis.PASSWORD}
+
+  - name: admin-panel
+    source_dir: admin-panel
+    dockerfile_path: Dockerfile
+    http_port: 80
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    routes:
+      - path: /
+    envs:
+      - key: VITE_API_URL
+        value: https://itsur-eats-v6-api-xxxxx.ondigitalocean.app/api/v1
+
+databases:
+  - name: db
+    engine: PG
+    version: "15"
+    production: true
+    cluster_name: itsur-eats-db
+    num_nodes: 1
+    size: db-s-1vcpu-1gb
+
+  - name: redis
+    engine: REDIS
+    version: "7"
+    production: true
+    cluster_name: itsur-eats-redis
+    num_nodes: 1
+    size: db-s-1vcpu-1gb
