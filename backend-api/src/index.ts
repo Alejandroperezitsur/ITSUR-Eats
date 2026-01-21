@@ -3,12 +3,22 @@ import express, { Express } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import { errorHandler, notFoundHandler, requestLogger } from '@middleware/error';
+import { metricsMiddleware, getMetrics } from './config/monitoring';
 import authRoutes from '@routes/auth.routes';
 import productRoutes from '@routes/product.routes';
 import orderRoutes from '@routes/order.routes';
 
+import { createServer } from 'http';
+import { initializeSocketIO } from './config/websocket';
+
 const app: Express = express();
+const httpServer = createServer(app);
 const PORT = process.env.PORT || 3000;
+
+// Initialize Socket.IO
+initializeSocketIO(httpServer).catch(err => {
+  console.error('Failed to init Socket.IO:', err);
+});
 
 // ════════════════════════════════════════════════════════════
 // MIDDLEWARE GLOBALES
@@ -33,10 +43,13 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 // Logging
 app.use(requestLogger);
+app.use(metricsMiddleware);
 
 // ════════════════════════════════════════════════════════════
 // HEALTH CHECK
 // ════════════════════════════════════════════════════════════
+
+app.get('/metrics', getMetrics);
 
 app.get('/health', (req, res) => {
   res.status(200).json({
@@ -71,7 +84,7 @@ app.use(errorHandler);
 // ════════════════════════════════════════════════════════════
 
 if (require.main === module) {
-  app.listen(PORT, () => {
+  httpServer.listen(PORT, () => {
     console.log(`✅ Server running on http://localhost:${PORT}`);
     console.log(`📝 API available at http://localhost:${PORT}/api/v1`);
     console.log(`💚 Health check at http://localhost:${PORT}/health`);

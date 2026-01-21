@@ -2,13 +2,15 @@ import { createClient, RedisClientType } from 'redis';
 
 let redisClient: RedisClientType;
 
+export const createRedisClient = () => {
+  return createClient({
+    url: `redis://${process.env.REDIS_PASSWORD ? `:${process.env.REDIS_PASSWORD}@` : ''}${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`,
+    database: parseInt(process.env.REDIS_DB || '0'),
+  });
+};
+
 const initRedis = async () => {
-  redisClient = createClient({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379'),
-    password: process.env.REDIS_PASSWORD,
-    db: parseInt(process.env.REDIS_DB || '0'),
-  } as any);
+  redisClient = createRedisClient() as RedisClientType;
 
   redisClient.on('error', (err: Error) => {
     console.error('Redis Client Error:', err);

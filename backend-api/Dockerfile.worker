@@ -1,0 +1,33 @@
+# Stage 1: Build
+FROM node:18-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY prisma ./prisma/
+
+RUN npm ci
+RUN npx prisma generate
+
+COPY tsconfig.json ./
+COPY src ./src
+
+RUN npm run build
+
+# Stage 2: Production
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY prisma ./prisma/
+
+RUN npm ci --only=production
+RUN npx prisma generate
+
+COPY --from=builder /app/dist ./dist
+
+# Worker doesn't expose HTTP ports usually, but might for health checks
+# EXPOSE 3000 
+
+CMD ["node", "dist/worker.js"]

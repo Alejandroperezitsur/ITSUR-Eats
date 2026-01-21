@@ -1,28 +1,26 @@
-FROM node:18-alpine
-
+# Build Stage
+FROM node:18-alpine AS builder
 WORKDIR /app
-
-# Copiar package files
 COPY package*.json ./
-
-# Instalar dependencias
+COPY prisma ./prisma/
 RUN npm ci
-
-# Copiar código
 COPY . .
-
-# Generar Prisma client
 RUN npx prisma generate
-
-# Compilar TypeScript
 RUN npm run build
 
-# Exponer puerto
-EXPOSE 3000
+# Production Stage
+FROM node:18-alpine
+WORKDIR /app
+ENV NODE_ENV=production
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3000/health', (r) => {if (r.statusCode !== 200) throw new Error(r.statusCode)})"
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/prisma ./prisma
 
-# Iniciar
-CMD ["npm", "start"]
+# Add dumb-init for proper signal handling
+RUN apk add --no-cache dumb-init
+ENTRYPOINT ["/usr/bin/dumb-init", "--"]
+
+# Default to API
+CMD ["node", "dist/index.js"]
