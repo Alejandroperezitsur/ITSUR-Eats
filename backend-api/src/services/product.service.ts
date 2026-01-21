@@ -1,9 +1,52 @@
 import { PrismaClient } from '@prisma/client';
-import type { ProductDTO, CategoryDTO } from '../types/index';
+import type { ProductDTO, CategoryDTO, CreateProductRequest, UpdateProductRequest } from '../types/index';
 
 const prisma = new PrismaClient();
 
 export class ProductService {
+  /**
+   * Crear producto
+   */
+  async createProduct(data: CreateProductRequest): Promise<ProductDTO> {
+    const product = await prisma.product.create({
+      data: {
+        name: data.name,
+        description: data.description,
+        price: data.price,
+        categoryId: data.categoryId,
+        stock: data.stock || 0,
+        available: data.available ?? true,
+        imageUrl: data.imageUrl,
+      },
+      include: { category: true }
+    });
+    return this.mapProductToDTO(product);
+  }
+
+  /**
+   * Actualizar producto
+   */
+  async updateProduct(id: string, data: UpdateProductRequest): Promise<ProductDTO> {
+    const product = await prisma.product.update({
+      where: { id },
+      data: {
+        ...data,
+      },
+      include: { category: true }
+    });
+    return this.mapProductToDTO(product);
+  }
+
+  /**
+   * Eliminar producto (Soft delete)
+   */
+  async deleteProduct(id: string): Promise<void> {
+    await prisma.product.update({
+      where: { id },
+      data: { isActive: false }
+    });
+  }
+
   /**
    * Obtener todas las categorías
    */

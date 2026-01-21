@@ -1,6 +1,8 @@
 import { PrismaClient } from '@prisma/client';
+import { createHash } from 'crypto';
 import { hashPassword, comparePassword, isValidEmail } from '../utils/helpers';
-import { generateTokens } from '../utils/jwt';
+import { generateTokens, verifyRefreshToken } from '../utils/jwt';
+import { sessionService } from './session.service';
 import type { RegisterRequest, LoginRequest, UserDTO, AuthToken } from '../types/index';
 
 const prisma = new PrismaClient();
@@ -9,7 +11,10 @@ export class AuthService {
   /**
    * Registrar nuevo usuario
    */
-  async register(data: RegisterRequest): Promise<{ user: UserDTO; tokens: AuthToken }> {
+  async register(
+    data: RegisterRequest,
+    deviceInfo: { ip: string; userAgent: string; fingerprint: string }
+  ): Promise<{ user: UserDTO; tokens: AuthToken }> {
     // Validar email
     if (!isValidEmail(data.email)) {
       throw new Error('Invalid email format');
@@ -44,6 +49,9 @@ export class AuthService {
       role: user.role,
     });
 
+    // Crear sesión
+    await sessionService.createSession(user.id, user.role, tokens, deviceInfo);
+
     // Actualizar lastLogin
     await prisma.user.update({
       where: { id: user.id },
@@ -58,7 +66,10 @@ export class AuthService {
   /**
    * Login usuario
    */
-  async login(data: LoginRequest): Promise<{ user: UserDTO; tokens: AuthToken }> {
+  async login(
+    data: LoginRequest,
+    deviceInfo: { ip: string; userAgent: string; fingerprint: string }
+  ): Promise<{ user: UserDTO; tokens: AuthToken }> {
     // Buscar usuario
     const user = await prisma.user.findUnique({
       where: { email: data.email },
@@ -85,6 +96,9 @@ export class AuthService {
       role: user.role,
     });
 
+    // Crear sesión
+    await sessionService.createSession(user.id, user.role, tokens, deviceInfo);
+
     // Actualizar lastLogin
     await prisma.user.update({
       where: { id: user.id },
@@ -97,18 +111,53 @@ export class AuthService {
   }
 
   /**
-   * Obtener usuario por ID
+   * Refresh Token
    */
-  async getUserById(id: string): Promise<UserDTO | null> {
-    const user = await prisma.user.findUnique({
-      where: { id },
-    });
+  async refreshToken(
+    token: string,
+    deviceInfo: { ip: string; userAgent: string; fingerprint: string }
+  ): Promise<AuthToken> {
+    try {
+      // Verificar token
+      const payload = verifyRefreshToken(token);
 
+      // Generar nuevos tokens
+      const newTokens = generateTokens({
+        id: payload.id,
+        email: payload.email,
+        role: payload.role,
+      });
+
+      // Rotar sesión
+      await sessionService.rotateSession(token, newTokens, deviceInfo);
+
+      return newTokens;
+    } catch (error) {
+      throw new Error('Invalid refresh token');
+    }
+  }
+
+  /**
+   * Logout
+   */
+  async logout(refreshToken: string): Promise<void> {
+    const hash = createHash('sha256').update(refreshToken).digest('hex');
+    const session = await prisma.session.findFirst({ where: { refreshTokenHash: hash } });
+    if (session) await sessionService.revokeSession(session.id, 'User Logout');
+  }
+
+  /**
+   * Get User By ID
+   */
+  async getUserById(userId: string): Promise<UserDTO | null> {
+    const user = await prisma.user.findUnique({
+        where: { id: userId }
+    });
     return user ? this.mapUserToDTO(user) : null;
   }
 
   /**
-   * Mapear usuario a DTO
+   * Map User to DTO
    */
   private mapUserToDTO(user: any): UserDTO {
     return {
@@ -116,10 +165,9 @@ export class AuthService {
       email: user.email,
       name: user.name,
       role: user.role,
-      avatar: user.avatar,
       isActive: user.isActive,
-      lastLogin: user.lastLogin,
       createdAt: user.createdAt,
+      lastLogin: user.lastLogin,
     };
   }
 }

@@ -84,6 +84,71 @@ export class ProductController {
       });
     }
   }
+
+  /**
+   * POST /products
+   */
+  async createProduct(req: Request, res: Response): Promise<void> {
+    try {
+      const product = await productService.createProduct(req.body);
+      res.status(201).json({
+        success: true,
+        data: product,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to create product';
+      res.status(500).json({
+        success: false,
+        error: { message, code: 'CREATE_PRODUCT_ERROR' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  /**
+   * PATCH /products/:id
+   */
+  async updateProduct(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const product = await productService.updateProduct(id, req.body);
+      res.status(200).json({
+        success: true,
+        data: product,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to update product';
+      res.status(500).json({
+        success: false,
+        error: { message, code: 'UPDATE_PRODUCT_ERROR' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
+
+  /**
+   * DELETE /products/:id
+   */
+  async deleteProduct(req: Request, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      await productService.deleteProduct(id);
+      res.status(200).json({
+        success: true,
+        data: { message: 'Product deleted successfully' },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete product';
+      res.status(500).json({
+        success: false,
+        error: { message, code: 'DELETE_PRODUCT_ERROR' },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }
 }
 
 export const productController = new ProductController();

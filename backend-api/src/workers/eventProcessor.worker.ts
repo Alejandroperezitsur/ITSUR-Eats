@@ -1,218 +1,150 @@
-/**
- * EventProcessorWorker v5.0
- * Worker que procesa eventos del Outbox Pattern
- * Garantiza "at-least-once delivery"
- */
-
 import { prisma } from '../config/prisma';
-import { redis } from '../config/redis';
 import { io } from '../config/websocket';
+import { EventOutbox } from '@prisma/client';
 
-class EventProcessorWorker {
+type EventHandler = (event: EventOutbox) => Promise<void>;
+
+export class EventProcessorWorker {
   private isRunning = false;
-  private readonly retryIntervals = [5000, 30000, 5 * 60 * 1000, 30 * 60 * 1000];
-  private readonly maxRetries = 5;
+  private readonly maxRetries = 3;
+  private processingPromise: Promise<void> | null = null;
 
-  /**
-   * Iniciar el worker
-   */
   start() {
     if (this.isRunning) return;
     this.isRunning = true;
-
     console.log('✓ EventProcessor worker started');
 
-    // Ejecutar cada 5 segundos
-    setInterval(() => this.processEvents().catch(err => 
-      console.error('[EventProcessor] Fatal error:', err)
-    ), 5000);
+    // Execute every 5 seconds
+    setInterval(() => {
+        if (this.processingPromise) return; // Prevent overlapping runs
+        this.processingPromise = this.processEvents().finally(() => {
+            this.processingPromise = null;
+        });
+    }, 5000);
   }
 
-  /**
-   * Procesar eventos pendientes
-   */
   private async processEvents() {
     try {
+      // Find events that are not processed
+      // We fetch a batch of unprocessed events. 
+      // We filter by retryCount < 20 to avoid stuck events clogging the pipeline,
+      // but actual retry logic respects event.maxRetries
       const events = await prisma.eventOutbox.findMany({
-        where: { published: false },
+        where: { 
+          processed: false, 
+          retryCount: { lt: 20 } 
+        },
         orderBy: [
-          { priority: 'desc' },
-          { createdAt: 'asc' }
+            { createdAt: 'asc' }
         ],
-        take: 100
+        take: 50
       });
 
       if (events.length === 0) return;
 
       for (const event of events) {
-        await this.processEvent(event);
+        if (this.shouldRetry(event)) {
+             await this.processEvent(event);
+        }
       }
     } catch (error) {
       console.error('[EventProcessor] Query error:', error);
     }
   }
 
-  /**
-   * Procesar un evento individual
-   */
-  private async processEvent(event: any) {
+  private shouldRetry(event: EventOutbox): boolean {
+      // Use event-specific maxRetries if available (it is in schema)
+      if (event.retryCount >= event.maxRetries) return false;
+      
+      // If never retried or no updatedAt, retry immediately (or it's first run)
+      if (event.retryCount === 0) return true;
+      
+      // Since we added updatedAt to schema, it should be available. 
+      // Fallback to createdAt if updatedAt is somehow missing/null (though schema says non-nullable)
+      const lastAttempt = event.updatedAt || event.createdAt;
+      
+      // Exponential backoff: 5s, 25s, 125s...
+      const backoffSeconds = Math.pow(5, event.retryCount); 
+      const nextRetry = new Date(lastAttempt.getTime() + backoffSeconds * 1000);
+      return new Date() >= nextRetry;
+  }
+
+  private async processEvent(event: EventOutbox) {
     try {
-      const handlers = this.getEventHandlers(event.eventType);
-
-      // Ejecutar handlers
-      for (const handler of handlers) {
-        try {
-          await handler(event);
-        } catch (handlerError) {
-          console.error(
-            `[EventProcessor] Handler failed for ${event.eventType}:`,
-            handlerError
-          );
-          // Continuar con siguientes handlers
-        }
+      const handler = this.getHandler(event.eventType);
+      
+      if (handler) {
+        await handler(event);
+      } else {
+        console.warn(`[EventProcessor] No handler for ${event.eventType}`);
+        // If no handler, maybe mark as processed or ignore? 
+        // For now, let's mark processed so we don't loop forever on unknown events
+        // But in strict system, maybe move to DLQ.
       }
 
-      // Marcar como publicado
       await prisma.eventOutbox.update({
         where: { id: event.id },
         data: {
-          published: true,
-          publishedAt: new Date(),
-          attempts: event.attempts + 1
+          processed: true,
+          processedAt: new Date(),
+          lastError: null // Clear error if success
         }
       });
+      
+      console.log(`✓ Event processed: ${event.eventType} (${event.aggregateId})`);
 
-      console.log(
-        `✓ Event published: ${event.eventType} (${event.aggregateId})`
-      );
     } catch (error) {
-      await this.handleEventError(event, error);
+      await this.handleError(event, error);
     }
   }
 
-  /**
-   * Manejar error con reintentos exponenciales
-   */
-  private async handleEventError(event: any, error: any) {
-    const nextAttempt = event.attempts + 1;
-
-    if (nextAttempt >= this.maxRetries) {
-      // Máximos reintentos alcanzados
-      await prisma.eventOutbox.update({
-        where: { id: event.id },
-        data: {
-          error: `Max retries exceeded: ${error.message}`,
-          lastAttemptAt: new Date()
+  private getHandler(eventType: string): EventHandler | null {
+    const handlers: Record<string, EventHandler> = {
+      'ORDER_CREATED': async (event) => {
+        // Emit socket event to 'admin' and 'vendor' rooms
+        // Payload comes as JsonValue, need cast
+        const payload = event.payload as any;
+        io.to('roles:admin').to('roles:cafeteria_staff').emit('new_order', payload);
+      },
+      'ORDER_STATUS_UPDATED': async (event) => {
+        // Emit to specific user room
+        const { userId, orderId, status } = event.payload as any;
+        if (userId) {
+          io.to(`user:${userId}`).emit('order_update', { orderId, status });
         }
-      });
-
-      console.error(
-        `✗ Event failed permanently: ${event.eventType} (${event.aggregateId})`
-      );
-
-      // Alertar a sistemas de monitoreo
-      await this.alertMonitoring(event, error);
-    } else {
-      // Reintento con backoff exponencial
-      const delayMs = this.retryIntervals[nextAttempt - 1];
-
-      await prisma.eventOutbox.update({
-        where: { id: event.id },
-        data: {
-          attempts: nextAttempt,
-          error: error.message,
-          lastAttemptAt: new Date()
-        }
-      });
-
-      console.warn(
-        `⟳ Event retry scheduled: ${event.eventType} in ${delayMs / 1000}s`
-      );
-    }
-  }
-
-  /**
-   * Handlers por tipo de evento
-   */
-  private getEventHandlers(eventType: string) {
-    const handlers: { [key: string]: Function[] } = {
-      'order.created': [
-        this.notifyVendorSocket.bind(this),
-        this.logToAudit.bind(this)
-      ],
-      'order.accepted': [
-        this.notifyCustomerSocket.bind(this),
-        this.logToAudit.bind(this)
-      ],
-      'order.ready': [
-        this.notifyCustomerSocket.bind(this),
-        this.logToAudit.bind(this)
-      ],
-      'payment.completed': [
-        this.notifyBothSockets.bind(this),
-        this.logToAudit.bind(this)
-      ]
+        // Also notify staff
+        io.to('roles:admin').to('roles:cafeteria_staff').emit('order_update', { orderId, status });
+      },
+      'PAYMENT_COMPLETED': async (event) => {
+         const { userId, orderId } = event.payload as any;
+         if (userId) {
+             io.to(`user:${userId}`).emit('payment_success', { orderId });
+         }
+      },
+      // Add more handlers here
     };
-
-    return handlers[eventType] || [];
+    return handlers[eventType] || null;
   }
 
-  /**
-   * Handler: Notificar vendor vía socket
-   */
-  private async notifyVendorSocket(event: any) {
-    const { vendorId } = event.data;
-    io.to(`vendor:${vendorId}`).emit('order:new', {
-      orderId: event.aggregateId,
-      ...event.data
-    });
-  }
+  private async handleError(event: EventOutbox, error: any) {
+    const retryCount = event.retryCount + 1;
+    const lastError = error instanceof Error ? error.message : String(error);
 
-  /**
-   * Handler: Notificar customer vía socket
-   */
-  private async notifyCustomerSocket(event: any) {
-    const { customerId } = event.data;
-    io.to(`customer:${customerId}`).emit('order:update', {
-      orderId: event.aggregateId,
-      ...event.data
-    });
-  }
-
-  /**
-   * Handler: Notificar ambos
-   */
-  private async notifyBothSockets(event: any) {
-    await this.notifyCustomerSocket(event);
-    await this.notifyVendorSocket(event);
-  }
-
-  /**
-   * Handler: Log a auditoría
-   */
-  private async logToAudit(event: any) {
-    await prisma.auditLog.create({
+    // If we hit max retries, we could potentially move to a separate DLQ table here
+    // But for now, just updating retryCount and leaving processed=false acts as a DLQ 
+    // (since the main query filters out retryCount >= maxRetries)
+    
+    await prisma.eventOutbox.update({
+      where: { id: event.id },
       data: {
-        action: event.eventType,
-        aggregateId: event.aggregateId,
-        aggregateType: event.aggregateType,
-        changes: JSON.stringify(event.data),
-        timestamp: new Date()
+        retryCount,
+        lastError,
+        // Prisma automatically updates 'updatedAt' which we use for backoff
       }
     });
-  }
-
-  /**
-   * Alertar a sistemas de monitoreo
-   */
-  private async alertMonitoring(event: any, error: any) {
-    console.error(
-      `[MONITORING] Critical event failure: ${event.eventType}`,
-      error
-    );
-    // En producción: enviar a Datadog, NewRelic, etc.
+    
+    console.error(`[EventProcessor] Error processing ${event.id} (Retry ${retryCount}/${this.maxRetries}): ${lastError}`);
   }
 }
 
-// Singleton
 export const eventProcessor = new EventProcessorWorker();

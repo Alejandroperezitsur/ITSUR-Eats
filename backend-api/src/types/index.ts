@@ -58,6 +58,27 @@ export interface UserDTO {
   createdAt: Date;
 }
 
+// Product Requests
+export interface CreateProductRequest {
+  name: string;
+  description?: string;
+  price: number;
+  categoryId: string;
+  stock?: number;
+  available?: boolean;
+  imageUrl?: string;
+}
+
+export interface UpdateProductRequest {
+  name?: string;
+  description?: string;
+  price?: number;
+  categoryId?: string;
+  stock?: number;
+  available?: boolean;
+  imageUrl?: string;
+}
+
 // Product DTO
 export interface ProductDTO {
   id: string;

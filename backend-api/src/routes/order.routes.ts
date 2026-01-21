@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { orderController } from '@controllers/order.controller';
 import { authenticateJWT, authorize } from '@middleware/auth';
+import { auditMiddleware } from '@middleware/audit';
+import { AuditAction } from '@prisma/client';
 import { validateBody, validateParams, validateQuery, commonSchemas } from '@middleware/validation';
 import Joi from 'joi';
 
@@ -26,6 +28,7 @@ router.post(
       notes: Joi.string().max(500).optional(),
     })
   ),
+  auditMiddleware(AuditAction.ORDER_CREATED, 'Order'),
   (req, res) => orderController.createOrder(req, res)
 );
 
@@ -52,6 +55,7 @@ router.get(
 router.put(
   '/:id/cancel',
   validateParams(Joi.object({ id: commonSchemas.uuid })),
+  auditMiddleware(AuditAction.ORDER_CANCELLED, 'Order'),
   (req, res) => orderController.cancelOrder(req, res)
 );
 
@@ -60,6 +64,7 @@ router.put(
   '/:id/accept',
   authorize('CAFETERIA_STAFF', 'ADMIN'),
   validateParams(Joi.object({ id: commonSchemas.uuid })),
+  auditMiddleware(AuditAction.ORDER_ACCEPTED, 'Order'),
   (req, res) => orderController.acceptOrder(req, res)
 );
 
@@ -68,7 +73,17 @@ router.put(
   '/:id/ready',
   authorize('CAFETERIA_STAFF', 'ADMIN'),
   validateParams(Joi.object({ id: commonSchemas.uuid })),
+  auditMiddleware(AuditAction.ORDER_READY, 'Order'),
   (req, res) => orderController.markOrderReady(req, res)
+);
+
+// Complete order (staff only)
+router.put(
+  '/:id/complete',
+  authorize('CAFETERIA_STAFF', 'ADMIN'),
+  validateParams(Joi.object({ id: commonSchemas.uuid })),
+  auditMiddleware(AuditAction.ORDER_COMPLETED, 'Order'),
+  (req, res) => orderController.completeOrder(req, res)
 );
 
 export default router;
